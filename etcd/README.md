@@ -37,46 +37,59 @@ Git clone YCSB and compile:
 Set endpoints, eachActionTimeout, namespace, etc. in the workload you plan to run.
 
 - `etcd.endpoints`
-- `etcd.timeout.eachAction`
+  + endpoints of cluster, see [jetcd doc](https://github.com/etcd-io/jetcd#usage) for details
+  + if offered in the form of `192.168.56.0:2379`, this binding will automatically wrap `http://` at the head of each endpoint
+  + delimited by comma
+- `etcd.action.timeout`
+  + timeout of each read/insert/update/delete operation
+  + timeunit is milliseconds
+  + default as `500`
+- `etcd.action.preheat`
+  + whether to establish session with servers at init stage rather than the 
+  first read/insert/update/delete operation
+  + default as `true`
 - `etcd.charset`
 - `etcd.user.name`
 - `etcd.user.password`
 - `etcd.namespace`
+- `etcd.getClusterInfo`
+  + whether to get etcd server cluster information on size and endpoints at init stage
+  + if set `true`, this option will establish session with servers as well
+  + default as `false`
 
 ### 5. Load data and run tests
 
 Load the data:
 
     # -p recordcount,the count of records/paths you want to insert
-    ./bin/ycsb load zookeeper -s -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark -p recordcount=10000 > outputLoad.txt
+    ./bin/ycsb load etcd -s -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
+        -p recordcount=10000 > outputLoad.txt
 
 Run the workload test:
 
-    # YCSB workloadb is the most suitable workload for read-heavy workload for the ZooKeeper in the real world.
+    # YCSB workloadb is the most suitable workload for read-heavy workload for the etcd in the real world.
 
     # -p fieldlength, test the length of value/data-content took effect on performance
-    ./bin/ycsb run zookeeper -s -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark -p fieldlength=1000
+    ./bin/ycsb run etcd -s -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
+        -p fieldlength=1000
 
     # -p fieldcount
-    ./bin/ycsb run zookeeper -s -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark -p fieldcount=20
+    ./bin/ycsb run etcd -s -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
+        -p fieldcount=20
 
     # -p hdrhistogram.percentiles,show the hdrhistogram benchmark result
-    ./bin/ycsb run zookeeper -threads 1 -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark -p hdrhistogram.percentiles=10,25,50,75,90,95,99,99.9 -p histogram.buckets=500
+    ./bin/ycsb run etcd -threads 1 -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
+        -p hdrhistogram.percentiles=10,25,50,75,90,95,99,99.9 -p histogram.buckets=500
 
     # -threads: multi-clients test, increase the **maxClientCnxns** in the zoo.cfg to handle more connections.
-    ./bin/ycsb run zookeeper -threads 10 -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark
+    ./bin/ycsb run etcd -threads 10 -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379
 
     # show the timeseries benchmark result
-    ./bin/ycsb run zookeeper -threads 1 -P workloads/workloadb -p zookeeper.connectString=127.0.0.1:2181/benchmark -p measurementtype=timeseries -p timeseries.granularity=50
-
-    # cluster test
-    ./bin/ycsb run zookeeper -P workloads/workloadb -p zookeeper.connectString=192.168.10.43:2181,192.168.10.45:2181,192.168.10.27:2181/benchmark
-
-    # test leader's read/write performance by setting zookeeper.connectString to leader's(192.168.10.43:2181)
-    ./bin/ycsb run zookeeper -P workloads/workloadb -p zookeeper.connectString=192.168.10.43:2181/benchmark
-
-    # test for large znode(by default: jute.maxbuffer is 1048575 bytes/1 MB ). Notice:jute.maxbuffer should also be set the same value in all the zk servers.
-    ./bin/ycsb run zookeeper -jvm-args="-Djute.maxbuffer=4194304" -s -P workloads/workloadc -p zookeeper.connectString=127.0.0.1:2181/benchmark
-
-    # Cleaning up the workspace after finishing the benchmark.
-    # e.g the CLI:deleteall /benchmark
+    ./bin/ycsb run etcd -threads 1 -P workloads/workloadb \
+        -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
+        -p measurementtype=timeseries -p timeseries.granularity=50
