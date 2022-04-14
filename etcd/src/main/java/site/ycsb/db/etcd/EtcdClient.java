@@ -5,6 +5,7 @@ import io.etcd.jetcd.ByteSequence;
 import io.etcd.jetcd.Client;
 import io.etcd.jetcd.ClientBuilder;
 import io.etcd.jetcd.KV;
+import io.etcd.jetcd.cluster.Member;
 import io.etcd.jetcd.kv.DeleteResponse;
 import io.etcd.jetcd.kv.GetResponse;
 import org.slf4j.Logger;
@@ -29,15 +30,20 @@ public class EtcdClient extends DB {
   private Charset charset;
 
   public static final String ENDPOINTS = "etcd.endpoints";
-  public static final String ACTION_TIMEOUT = "etcd.timeout.eachAction";
+  public static final String ACTION_TIMEOUT = "etcd.action.timeout";
+  public static final String ACTION_PREHEAT = "etcd.action.preheat";
   public static final String CHARSET = "etcd.charset";
   public static final String USER_NAME = "etcd.user.name";
   public static final String PASSWORD = "etcd.user.password";
   public static final String NAMESPACE = "etcd.namespace";
+  public static final String GET_CLUSTER_INFO = "etcd.getClusterInfo";
 
   public static final long DEFAULT_ACTION_TIMEOUT = 500;
+  public static final boolean DEFAULT_ACTION_PREHEAT = true;
   public static final String DEFAULT_CHARSET = "UTF-8";
+  public static final boolean DEFAULT_GET_CLUSTER_INFO = false;
   private final TimeUnit timeUnit = TimeUnit.MILLISECONDS;
+  public static final String PREHEAT_PROBE = "__ycsb_preheat_probe";
   private static final Logger LOG = LoggerFactory.getLogger(EtcdClient.class);
 
   private ByteSequence keyToByteSequence(String s) {
@@ -75,7 +81,7 @@ public class EtcdClient extends DB {
     for (String url : endpoints.split(",")) {
       if (url != null && !url.isEmpty()) {
         try {
-          if (!url.startsWith("http")) {
+          if (!url.contains("://")) {
             url = "http://" + url;
           }
           endpointUrls.add(new URI(url));
@@ -106,7 +112,30 @@ public class EtcdClient extends DB {
     }
 
     this.client = builder.build();
+
+    if (Boolean.parseBoolean(prop.getProperty(GET_CLUSTER_INFO, Boolean.toString(DEFAULT_GET_CLUSTER_INFO)))){
+      try {
+        List<Member> mem = this.client.getClusterClient().
+            listMember().
+            get(this.actionTimeout, this.timeUnit).
+            getMembers();
+        StringJoiner sj = new StringJoiner(",", "[", "]");
+        mem.forEach(m -> m.getClientURIs().forEach(uri -> sj.add(uri.toString())));
+        LOG.info("Connect to cluster, size={}, available-endpoints={}", mem.size(), sj);
+      } catch (Exception e) {
+        throw new DBException("failed to get cluster info");
+      }
+    }
+
     this.kv = this.client.getKVClient();
+
+    if (Boolean.parseBoolean(prop.getProperty(ACTION_PREHEAT, Boolean.toString(DEFAULT_ACTION_PREHEAT)))){
+      try {
+        this.kv.get(ByteSequence.from(PREHEAT_PROBE, this.charset)).get(this.actionTimeout, this.timeUnit);
+      } catch (Exception e) {
+        throw new DBException("failed to send preheat probe");
+      }
+    }
   }
 
 
