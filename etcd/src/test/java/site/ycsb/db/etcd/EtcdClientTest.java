@@ -25,6 +25,19 @@ class EtcdClientTest {
   private String tableName;
   private Random rnd;
 
+  protected static void setOperator(Class<? extends Operator> clazz, Properties prop) {
+    if (clazz == SimpleOperator.class) {
+      prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.SIMPLE_OPERATOR);
+    } else if (clazz == DeltaOperator.class) {
+      prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.DELTA_OPERATOR);
+    } else if (clazz == CachedOperator.OnGetPutDeleteOperator.class) {
+      prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.CACHED_OPERATOR);
+      prop.setProperty(CachedOperator.OP_TYPE, CachedOperator.TYPE_ON_GPD);
+    } else {
+      throw new UnsupportedOperationException();
+    }
+  }
+
   @BeforeEach
   void setUp() throws Exception {
     client = new EtcdClient();
@@ -33,6 +46,7 @@ class EtcdClientTest {
     StringJoiner joiner = new StringJoiner(",");
     cluster.getClientEndpoints().forEach(url-> joiner.add(url.toString()));
     p.setProperty(EtcdClient.ENDPOINTS, joiner.toString());
+    setOperator(CachedOperator.OnGetPutDeleteOperator.class, p);
 
     Measurements.setProperties(p);
     final CoreWorkload workload = new CoreWorkload();
@@ -117,5 +131,21 @@ class EtcdClientTest {
     status = client.read(tableName, testKey, null, result);
     Assertions.assertEquals(Status.NOT_FOUND, status);
     Assertions.assertEquals(0, result.size());
+
+    // insert again
+    m = new HashMap<>();
+    String field3 = "field_3";
+    String value3 = "value_3";
+    m.put(field3, value3);
+    result = StringByteIterator.getByteIteratorMap(m);
+    status = client.insert(tableName, testKey, result);
+    Assertions.assertEquals(Status.OK, status);
+
+    // Verify result
+    result.clear();
+    status = client.read(tableName, testKey, null, result);
+    Assertions.assertEquals(Status.OK, status);
+    Assertions.assertEquals(1, result.size());
+    Assertions.assertEquals(value3, result.get(field3).toString());
   }
 }
