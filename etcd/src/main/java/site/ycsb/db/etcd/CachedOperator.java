@@ -20,9 +20,9 @@ import site.ycsb.Status;
 
 import java.nio.charset.Charset;
 import java.util.*;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
+
+import static site.ycsb.db.etcd.Operators.*;
 
 /**
  * The CachedOperator is an implementation of Operator.
@@ -237,7 +237,7 @@ public abstract class CachedOperator implements Operator {
   public Status read(String table, String key, Set<String> fields, Map<String, ByteIterator> result)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    GetResponse resp = this.client.get(toBs(key, charset)).get(timeout, timeUnit);
+    GetResponse resp = getGetResult(this.client.get(toBs(key, charset)), timeout, timeUnit);
     if (resp.getCount() == 0) {
       return Status.NOT_FOUND;
     } else if (resp.getCount() > 1) {
@@ -256,7 +256,7 @@ public abstract class CachedOperator implements Operator {
       throws InterruptedException, ExecutionException, TimeoutException {
 
     ByteSequence valSeq = toBs(values, charset);
-    PutResponse resp = this.client.put(toBs(key, charset), valSeq, insertOption).get(timeout, timeUnit);
+    PutResponse resp = getPutResult(this.client.put(toBs(key, charset), valSeq, insertOption), timeout, timeUnit);
     if (resp.hasPrevKv()) {
       updateCacheOnPrev(resp.getPrevKv(), valSeq);
     }
@@ -271,7 +271,7 @@ public abstract class CachedOperator implements Operator {
     updateStat.start();
     CacheEntry entry = getCacheEntryOrNull(key);
     if (entry == null) {
-      GetResponse getResp = this.client.get(toBs(key, charset)).get(timeout, timeUnit);
+      GetResponse getResp = getGetResult(this.client.get(toBs(key, charset)), timeout, timeUnit);
       updateStat.action(UpdateStat.Action.GET);
       if (getResp.getCount() == 0) {
         return Status.NOT_FOUND;
@@ -290,13 +290,16 @@ public abstract class CachedOperator implements Operator {
       ByteSequence valueSeq = toBs(oldValues, charset);
 
       ByteSequence keySeq = toBs(key, charset);
-      TxnResponse txnResp = this.client.txn().If(new Cmp(keySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
-          .Then(Op.TxnOp.txn(
-              new Cmp[]{new Cmp(keySeq, Cmp.Op.EQUAL, CmpTarget.createRevision(entry.createRevision)),
-                  new Cmp(keySeq, Cmp.Op.EQUAL, CmpTarget.version(entry.version))},
-              new Op[]{Op.put(keySeq, valueSeq, PutOption.DEFAULT)},
-              new Op[]{Op.get(keySeq, GetOption.DEFAULT)}))
-          .commit().get(timeout, timeUnit);
+      TxnResponse txnResp = getTxnResult(
+          this.client.txn().If(new Cmp(keySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
+              .Then(Op.TxnOp.txn(
+                  new Cmp[]{new Cmp(keySeq, Cmp.Op.EQUAL, CmpTarget.createRevision(entry.createRevision)),
+                      new Cmp(keySeq, Cmp.Op.EQUAL, CmpTarget.version(entry.version))},
+                  new Op[]{Op.put(keySeq, valueSeq, PutOption.DEFAULT)},
+                  new Op[]{Op.get(keySeq, GetOption.DEFAULT)}))
+              .commit(),
+          timeout, timeUnit
+      );
 
       updateStat.action(UpdateStat.Action.TXN);
 
@@ -348,7 +351,7 @@ public abstract class CachedOperator implements Operator {
   public Status delete(String tableName, String key)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    DeleteResponse resp = this.client.delete(toBs(key, charset), deleteOption).get(timeout, timeUnit);
+    DeleteResponse resp = getDeleteResult(this.client.delete(toBs(key, charset), deleteOption), timeout, timeUnit);
     if (resp.getPrevKvs().size() == 1) {
       deleteCacheOnPrev(resp.getPrevKvs().get(0), key);
     }

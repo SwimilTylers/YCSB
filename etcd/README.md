@@ -56,7 +56,14 @@ Set endpoints, eachActionTimeout, namespace, etc. in the workload you plan to ru
     + `cachedOperator`: if cache hit then write else read-and-retry
     + see [details](#Implementation of YCSB under different operators) for actual operation mapping
     + see [sub-parameters](#Parameters of different operators) for operator parameters
-  + default as `deltaOperator`
+    + if `etcd.action.preheat` is `true`, load all keyValue in etcd to cache
+  + default as `cachedOperator`
+- `etcd.action.suppressExceptions`
+    + debug option
+    + if `true`, intercept all exceptions thrown by operator
+- `etcd.action.printEach`
+    + debug option
+    + if `true`, print the result of each operation
 - `etcd.charset`
 - `etcd.user.name`
 - `etcd.user.password`
@@ -94,7 +101,6 @@ Run the workload test:
         -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379 \
         -p hdrhistogram.percentiles=10,25,50,75,90,95,99,99.9 -p histogram.buckets=500
 
-    # -threads: multi-clients test, increase the **maxClientCnxns** in the zoo.cfg to handle more connections.
     ./bin/ycsb run etcd -threads 10 -P workloads/workloadb \
         -p etcd.endpoints=192.168.56.1:2379,192.168.56.2:2379,192.168.56.3:2379
 
@@ -107,13 +113,13 @@ Run the workload test:
 
 #### Implementation of YCSB under different operators
 
-|          | `simpleOperator`  | `deltaOperator` | `cachedOperator`                                         |
-|----------|-------------------|-----------------|----------------------------------------------------------|
-| `insert` | 1x`Put`           | 1x`Txn`         | 1x`Put`                                                  |
-| `read`   | 1x`Get`           | 1x`Txn`         | 1x`Get`                                                  |
-| `update` | 1x`Get` + 1x`Put` | 1x`Txn`         | 1x`Txn` (cache hit), 1x`Get`+multiple `Txn` (cache miss) |
-| `delete` | 1x`Delete`        | 1x`Txn`         | 1x`Delete`                                               |
-| `scan`   | not implemented   | not implemented | not implemented                                          |
+|          | `simpleOperator`  | `deltaOperator` | `cachedOperator`                                           |
+|----------|-------------------|-----------------|------------------------------------------------------------|
+| `insert` | 1x`Put`           | 1x`Txn`         | 1x`Put`                                                    |
+| `read`   | 1x`Get`           | 1x`Txn`         | 1x`Get`                                                    |
+| `update` | 1x`Get` + 1x`Put` | 1x`Txn`         | 1x`Txn` (cache hit), 1x`Get` + multiple `Txn` (cache miss) |
+| `delete` | 1x`Delete`        | 1x`Txn`         | 1x`Delete`                                                 |
+| `scan`   | not implemented   | not implemented | not implemented                                            |
 
 #### Parameters of different operators
 
@@ -133,12 +139,12 @@ Run the workload test:
 - `etcd.deltaOperator.delta`
   + the prefix added to the key delta info 
   + default as `delta`
-- `etcd.cachedOperator.type`
-  + cache type, which indicates how the cached can be refreshed
-  + default as `gpd`
+- `etcd.cachedOperator.cacheType`
+  + cache type
+  + default as `hashmap`
 - `etcd.cachedOperator.prevKV`
-  + if set, cache can be refreshed during insert/read/update/delete
-  + if no, cache can only be refreshed during read/update
+  + if set, try to refresh cache on each insert/read/update/delete
+  + if no, only try to refresh cache on each read/update
   + default as `true`
 - `etcd.cachedOperator.statOnUpdate`
   + statistics collected during update

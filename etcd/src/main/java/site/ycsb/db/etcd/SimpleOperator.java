@@ -13,6 +13,8 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import static site.ycsb.db.etcd.Operators.*;
+
 /**
  * The SimpleOperator is an implementation of Operator.
  *
@@ -40,7 +42,7 @@ public class SimpleOperator implements Operator {
   public Status read(String table, String key, Set<String> fields, Map<String, ByteIterator> result)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    GetResponse resp = this.kv.get(toBs(key, charset)).get(timeout, timeUnit);
+    GetResponse resp = getGetResult(this.kv.get(toBs(key, charset)), timeout, timeUnit);
     if (resp.getCount() == 0) {
       return Status.NOT_FOUND;
     } else if (resp.getCount() > 1) {
@@ -56,7 +58,7 @@ public class SimpleOperator implements Operator {
   public Status insert(String tableName, String key, Map<String, ByteIterator> values)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    this.kv.put(toBs(key, charset), toBs(values, charset)).get(timeout, timeUnit);
+    getPutResult(this.kv.put(toBs(key, charset), toBs(values, charset)), timeout, timeUnit);
     return Status.OK;
   }
 
@@ -64,7 +66,7 @@ public class SimpleOperator implements Operator {
   public Status update(String tableName, String key, Map<String, ByteIterator> values)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    GetResponse getResp = this.kv.get(toBs(key, charset)).get(timeout, timeUnit);
+    GetResponse getResp = getGetResult(this.kv.get(toBs(key, charset)), timeout, timeUnit);
     if (getResp.getCount() == 0) {
       return Status.NOT_FOUND;
     } else if (getResp.getCount() > 1) {
@@ -82,7 +84,7 @@ public class SimpleOperator implements Operator {
   public Status delete(String tableName, String key)
       throws InterruptedException, ExecutionException, TimeoutException {
 
-    DeleteResponse resp = this.kv.delete(toBs(key, charset)).get(timeout, timeUnit);
+    DeleteResponse resp = getDeleteResult(this.kv.delete(toBs(key, charset)), timeout, timeUnit);
     return resp.getDeleted() == 0 ? Status.NOT_FOUND : Status.OK;
   }
 

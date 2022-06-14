@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static site.ycsb.db.etcd.Operators.*;
+
 /**
  * The DeltaOperator is an implementation of Operator.
  *
@@ -117,15 +119,16 @@ public class DeltaOperator implements Operator{
     ByteSequence deltaKeysStart = toBs(deltaKeysPrefix(key), charset);
     ByteSequence deltaKeysEnd = OptionsUtil.prefixEndOf(deltaKeysStart);
 
-    List<GetResponse> gets = client.txn().Then(
-        Op.get(toBs(metaKey(key), charset), GetOption.DEFAULT),
-        Op.get(deltaKeysStart, GetOption.newBuilder()
-            .withRange(deltaKeysEnd)
-            .withSortOrder(GetOption.SortOrder.ASCEND)
-            .withSortField(GetOption.SortTarget.MOD)
-            .build()
-        )
-    ).commit().get(timeout, timeUnit).getGetResponses();
+    List<GetResponse> gets = getTxnResult(
+        client.txn().Then(
+            Op.get(toBs(metaKey(key), charset), GetOption.DEFAULT),
+            Op.get(deltaKeysStart, GetOption.newBuilder()
+                .withRange(deltaKeysEnd)
+                .withSortOrder(GetOption.SortOrder.ASCEND)
+                .withSortField(GetOption.SortTarget.MOD)
+                .build()
+            )
+        ).commit(), timeout, timeUnit).getGetResponses();
 
     if (gets.size() != 2) {
       return Status.UNEXPECTED_STATE;
@@ -177,11 +180,13 @@ public class DeltaOperator implements Operator{
     ByteSequence metaKeySeq = toBs(metaKey(key), charset);
     String starter = opStarter();
 
-    client.txn().Then(
+    getTxnResult(
+        client.txn().Then(
             Op.put(metaKeySeq, toBs(starter, charset), PutOption.DEFAULT),
             Op.put(toBs(starterDeltaKey(key, starter), charset), toBs(values, charset), PutOption.DEFAULT)
-        )
-        .commit().get(timeout, timeUnit);
+        ).commit(),
+        timeout, timeUnit
+    );
 
     LOG.debug("write {}={}, {}={}", metaKeySeq, starter, starterDeltaKey(key, starter), toBs(values, charset));
 
@@ -195,9 +200,12 @@ public class DeltaOperator implements Operator{
     ByteSequence metaKeySeq = toBs(metaKey(key), charset);
     String starter = opStarter();
 
-    TxnResponse resp = client.txn().If(new Cmp(metaKeySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
-        .Then(Op.put(toBs(starterDeltaKey(key, starter), charset), toBs(values, charset), PutOption.DEFAULT))
-        .commit().get(timeout, timeUnit);
+    TxnResponse resp = getTxnResult(
+        client.txn().If(new Cmp(metaKeySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
+            .Then(Op.put(toBs(starterDeltaKey(key, starter), charset), toBs(values, charset), PutOption.DEFAULT))
+            .commit(),
+        timeout, timeUnit
+    );
 
     return resp.isSucceeded() ? Status.OK : Status.NOT_FOUND;
   }
@@ -208,12 +216,15 @@ public class DeltaOperator implements Operator{
 
     ByteSequence metaKeySeq = toBs(metaKey(key), charset);
 
-    TxnResponse resp = client.txn().If(new Cmp(metaKeySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
-        .Then(
-            Op.delete(metaKeySeq, DeleteOption.DEFAULT),
-            Op.delete(toBs(deltaKeysPrefix(key), charset), DeleteOption.newBuilder().isPrefix(true).build())
-        )
-        .commit().get(timeout, timeUnit);
+    TxnResponse resp = getTxnResult(
+        client.txn().If(new Cmp(metaKeySeq, Cmp.Op.GREATER, CmpTarget.createRevision(0)))
+            .Then(
+                Op.delete(metaKeySeq, DeleteOption.DEFAULT),
+                Op.delete(toBs(deltaKeysPrefix(key), charset), DeleteOption.newBuilder().isPrefix(true).build())
+            )
+            .commit(),
+        timeout, timeUnit
+    );
 
     return resp.isSucceeded() ? Status.OK : Status.NOT_FOUND;
   }
