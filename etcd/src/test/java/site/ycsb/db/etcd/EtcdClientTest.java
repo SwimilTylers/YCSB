@@ -30,9 +30,8 @@ class EtcdClientTest {
       prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.SIMPLE_OPERATOR);
     } else if (clazz == DeltaOperator.class) {
       prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.DELTA_OPERATOR);
-    } else if (clazz == CachedOperator.OnGetPutDeleteOperator.class) {
+    } else if (clazz == CachedOperator.class) {
       prop.setProperty(EtcdClient.ACTION_OPERATOR, EtcdClient.CACHED_OPERATOR);
-      prop.setProperty(CachedOperator.OP_TYPE, CachedOperator.TYPE_ON_GPD);
     } else {
       throw new UnsupportedOperationException();
     }
@@ -46,7 +45,7 @@ class EtcdClientTest {
     StringJoiner joiner = new StringJoiner(",");
     cluster.getClientEndpoints().forEach(url-> joiner.add(url.toString()));
     p.setProperty(EtcdClient.ENDPOINTS, joiner.toString());
-    setOperator(CachedOperator.OnGetPutDeleteOperator.class, p);
+    setOperator(CachedOperator.class, p);
 
     Measurements.setProperties(p);
     final CoreWorkload workload = new CoreWorkload();

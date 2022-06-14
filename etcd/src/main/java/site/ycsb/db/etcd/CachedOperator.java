@@ -29,7 +29,7 @@ import static site.ycsb.db.etcd.Operators.*;
  *
  * See {@code etcd/README.md} for details.
  */
-public abstract class CachedOperator implements Operator {
+public class CachedOperator implements Operator {
   protected static class CacheEntry {
     protected long createRevision;
     protected long version;
@@ -76,50 +76,59 @@ public abstract class CachedOperator implements Operator {
 
   protected KV client;
   protected long timeout;
+  protected long preheatTimeout;
   protected TimeUnit timeUnit;
   protected Charset charset;
+  protected Map<String, CacheEntry> cache;
+  protected long maxKeyPerGet;
 
   protected UpdateStat updateStat;
 
   private PutOption insertOption = PutOption.DEFAULT;
   private DeleteOption deleteOption = DeleteOption.DEFAULT;
 
+  private static final Map<String, CacheEntry> UN_PREHEATED_SHARED_CACHE = new ConcurrentHashMap<>();
   private static final Logger LOG = LoggerFactory.getLogger(CachedOperator.class);
-
-  public static final String TYPE_ON_GPD = "gpd";
   public static final String STAT_UPDATE_NONE = "none";
   public static final String STAT_UPDATE_CAS = "cas";
   public static final String STAT_UPDATE_ACTION = "action";
-  public static final String OP_TYPE = "etcd.cachedOperator.type";
+  public static final String STAT_UPDATE_SHELL_ACTION = "shell_action";
+  public static final String CACHE_SHARED = "etcd.cachedOperator.shared";
+  public static final String LOAD_LIMIT = "etcd.cachedOperator.preheat.limit";
+  public static final String LOAD_TIMEOUT = "etcd.cachedOperator.preheat.timeout";
   public static final String PREV_KV = "etcd.cachedOperator.prevKV";
   public static final String STAT_UPDATE = "etcd.cachedOperator.statOnUpdate";
-  public static final String DEFAULT_OP_TYPE = TYPE_ON_GPD;
-  public static final boolean DEFAULT_PREV_KV = true;
+  public static final boolean DEFAULT_CACHE_SHARED = true;
+  public static final long DEFAULT_LIMIT = 2000;
+  public static final boolean DEFAULT_PREV_KV = false;
   public static final String DEFAULT_STAT_UPDATE = STAT_UPDATE_NONE;
 
   public static CachedOperator ofInstance(
       KV kv, long timeout, TimeUnit timeUnit, Charset charset, Properties properties){
 
-    String opType = properties.getProperty(OP_TYPE, DEFAULT_OP_TYPE);
-    if (opType.equals(DEFAULT_OP_TYPE)) {
-      OnGetPutDeleteOperator op = new OnGetPutDeleteOperator();
-      op.client = kv;
-      op.timeout = timeout;
-      op.timeUnit = timeUnit;
-      op.charset = charset;
-      op.updateStat = op.getUpdateStat(properties.getProperty(STAT_UPDATE, DEFAULT_STAT_UPDATE));
+    CachedOperator op = new CachedOperator();
+    op.client = kv;
+    op.timeout = timeout;
+    op.preheatTimeout = Long.parseLong(properties.getProperty(LOAD_TIMEOUT, Long.toString(timeout)));
+    op.timeUnit = timeUnit;
+    op.charset = charset;
+    op.maxKeyPerGet = Long.parseLong(properties.getProperty(LOAD_LIMIT, Long.toString(DEFAULT_LIMIT)));
+    op.updateStat = op.getUpdateStat(properties.getProperty(STAT_UPDATE, DEFAULT_STAT_UPDATE));
 
-      if (Boolean.parseBoolean(properties.getProperty(PREV_KV, Boolean.toString(DEFAULT_PREV_KV)))) {
-        op.changeOptions(
-            PutOption.newBuilder().withPrevKV().build(),
-            DeleteOption.newBuilder().withPrevKV(true).build()
-        );
-      }
-
-      return op;
+    if (getBooleanProperty(properties, CACHE_SHARED, DEFAULT_CACHE_SHARED)) {
+      op.cache = CachedOperator.UN_PREHEATED_SHARED_CACHE;
     } else {
-      throw new IllegalArgumentException("unknown CachedOperator type: "+opType);
+      op.cache = new HashMap<>();
     }
+
+    if (getBooleanProperty(properties, PREV_KV, DEFAULT_PREV_KV)) {
+      op.changeOptions(
+          PutOption.newBuilder().withPrevKV().build(),
+          DeleteOption.newBuilder().withPrevKV(true).build()
+      );
+    }
+
+    return op;
   }
 
   protected UpdateStat getUpdateStat(String t) {
@@ -213,20 +222,101 @@ public abstract class CachedOperator implements Operator {
           }
         }
       };
+    case STAT_UPDATE_SHELL_ACTION:
+      return new UpdateStat() {
+        @Override
+        public void start() {}
+
+        @Override
+        public void finish() {}
+
+        @Override
+        public String report() {
+          return null;
+        }
+
+        @Override
+        public void action(Action a) {
+          switch (a) {
+            case GET:
+              LOG.info("from [shell_action]: [M] key not found in cache");
+              break;
+            case TXN_NOT_FOUND:
+              LOG.info("from [shell_action]: [X] value deleted");
+              break;
+            case TXN_CAS_FAILED:
+              LOG.info("from [shell_action]: [F] value changed");
+              break;
+            case TXN_CAS_SUCCEED:
+              LOG.info("from [shell_action]: [S] hit");
+              break;
+            default:
+          }
+        }
+      };
     default:
       throw new IllegalArgumentException("unknown stat-update type: "+t);
     }
   }
 
-  protected abstract void updateCache(KeyValue kv);
+  protected void updateCache(KeyValue kv) {
+    cache.compute(bsToString(kv.getKey(), charset), (k, v) -> {
+        if (v == null) {
+          return CacheEntry.ofKeyValue(kv);
+        } else {
+          CacheEntry e = CacheEntry.ofKeyValue(kv);
+          return e.createRevision == v.createRevision && e.version > v.version ? e : v;
+        }
+      }
+    );
+  }
 
-  protected abstract void updateCacheOnPrev(KeyValue prevKv, ByteSequence newValue);
-  protected abstract void deleteCacheOnPrev(KeyValue prevKv, String key);
+  protected void updateCacheOnPrev(KeyValue prevKv, ByteSequence newValue) {
+    CacheEntry e = CacheEntry.ofKeyValue(prevKv);
+    String key = bsToString(prevKv.getKey(), charset);
+    updateCacheOnOk(e, key, newValue);
+  }
 
-  protected abstract void updateCacheOnOk(CacheEntry e, String key, ByteSequence newValue);
-  protected abstract void deleteCacheOnKeyNotFound(CacheEntry e, String key);
+  protected void deleteCacheOnPrev(KeyValue prevKv, String key) {
+    CacheEntry e = CacheEntry.ofKeyValue(prevKv);
+    deleteCacheOnKeyNotFound(e, key);
+  }
 
-  protected abstract CacheEntry getCacheEntryOrNull(String key);
+  protected void updateCacheOnOk(CacheEntry e, String key, ByteSequence newValue) {
+    cache.compute(key, (k, v) -> {
+        if (v == null) {
+          return null;
+        } else if (CacheEntry.equals(v, e)){
+          return CacheEntry.ofDerived(v, newValue);
+        } else {
+          return v;
+        }
+      }
+    );
+  }
+
+  protected void deleteCacheOnKeyNotFound(CacheEntry e, String key) {
+    cache.compute(key, (k, v) -> {
+        if (v == null || e.createRevision == v.createRevision) {
+          return null;
+        } else {
+          return v;
+        }
+      }
+    );
+  }
+
+  protected CacheEntry getCacheEntryOrNull(String key) {
+    return cache.getOrDefault(key, null);
+  }
+
+  @Override
+  public void cleanup() {
+    String stat = updateStat.report();
+    if (stat != null && stat.length() > 0) {
+      LOG.warn("update statistics: {}", stat);
+    }
+  }
 
   protected void changeOptions(PutOption insert, DeleteOption delete) {
     this.insertOption = insert;
@@ -359,76 +449,78 @@ public abstract class CachedOperator implements Operator {
     return resp.getDeleted() == 0 ? Status.NOT_FOUND : Status.OK;
   }
 
+  @Override
+  public void preheat(String table) throws InterruptedException, ExecutionException, TimeoutException {
+    if (cache == UN_PREHEATED_SHARED_CACHE) {
+      cache = CacheLoader.getInstance(client, preheatTimeout, timeUnit, charset, maxKeyPerGet).getCache();
+      LOG.info("shared cache preheated, total key number = {}", cache.size());
+    } else {
+      cache = CacheLoader.getInstance(client, preheatTimeout, timeUnit, charset, maxKeyPerGet).getCopyOfCache();
+      LOG.info("cache of {} preheated, total key number = {}", Thread.currentThread().getName(), cache.size());
+    }
+  }
+
   /**
-   * The OnGetPutDeleteOperator updates cache in CachedOperator through etcd Get operation.
+   * The CacheLoader is a singleton for loading cache from etcd at preheat stage.
    *
    * See {@code etcd/README.md} for details.
    */
-  public static class OnGetPutDeleteOperator extends CachedOperator {
-    protected Map<String, CacheEntry> cache = new HashMap<>();
+  public static final class CacheLoader {
+    private static volatile CacheLoader cacheLoader;
 
-    @Override
-    protected void updateCache(KeyValue kv) {
-      cache.compute(bsToString(kv.getKey(), charset), (k, v) -> {
-          if (v == null) {
-            return CacheEntry.ofKeyValue(kv);
-          } else {
-            CacheEntry e = CacheEntry.ofKeyValue(kv);
-            return e.createRevision == v.createRevision && e.version > v.version ? e : v;
+    private final Map<String, CacheEntry> cache = new ConcurrentHashMap<>();
+
+    private CacheLoader(){}
+
+    public static CacheLoader getInstance(KV kv, long timeout, TimeUnit unit, Charset charset, long limit)
+        throws InterruptedException, ExecutionException, TimeoutException {
+
+      if (cacheLoader == null) {
+        synchronized (CacheLoader.class) {
+          if (cacheLoader == null) {
+            CacheLoader loader = new CacheLoader();
+            ByteSequence keyPrefixStart = ByteSequence.from(new byte[]{0});
+            ByteSequence keyPrefixEnd = ByteSequence.from(new byte[]{0});
+            loader.load(kv, timeout, unit, charset, limit, keyPrefixStart, keyPrefixEnd);
+
+            cacheLoader = loader;
           }
         }
-      );
+      }
+
+      return cacheLoader;
     }
 
-    @Override
-    protected void updateCacheOnPrev(KeyValue prevKv, ByteSequence newValue) {
-      CacheEntry e = CacheEntry.ofKeyValue(prevKv);
-      String key = bsToString(prevKv.getKey(), charset);
-      updateCacheOnOk(e, key, newValue);
+    public Map<String, CacheEntry> getCache() {
+      return cache;
     }
 
-    @Override
-    protected void deleteCacheOnPrev(KeyValue prevKv, String key) {
-      CacheEntry e = CacheEntry.ofKeyValue(prevKv);
-      deleteCacheOnKeyNotFound(e, key);
+    public Map<String, CacheEntry> getCopyOfCache() {
+      return new HashMap<>(cache);
     }
 
-    @Override
-    protected void updateCacheOnOk(CacheEntry e, String key, ByteSequence newValue) {
-      cache.compute(key, (k, v) -> {
-          if (v == null) {
-            return null;
-          } else if (CacheEntry.equals(v, e)){
-            return CacheEntry.ofDerived(v, newValue);
-          } else {
-            return v;
-          }
+    private void load(KV client, long timeout, TimeUnit timeUnit, Charset charset, long limitPerGet,
+                      ByteSequence keyPrefixStart, ByteSequence keyPrefixEnd)
+        throws ExecutionException, InterruptedException, TimeoutException {
+
+      ByteSequence curKeyPrefixStart = keyPrefixStart;
+      GetOption option = GetOption.newBuilder().withLimit(limitPerGet).withRange(keyPrefixEnd).build();
+
+      GetResponse resp = getGetResult(client.get(curKeyPrefixStart, option), timeout, timeUnit);
+      List<KeyValue> kvs = resp.getKvs();
+      if (kvs.isEmpty()) {
+        return;
+      }
+      kvs.forEach(kv -> cache.put(kv.getKey().toString(charset), CacheEntry.ofKeyValue(kv)));
+
+      while (resp.isMore()) {
+        curKeyPrefixStart = kvs.get(kvs.size()-1).getKey().concat(keyPrefixStart);
+        resp = getGetResult(client.get(curKeyPrefixStart, option), timeout, timeUnit);
+        kvs = resp.getKvs();
+        if (kvs.isEmpty()) {
+          break;
         }
-      );
-    }
-
-    @Override
-    protected void deleteCacheOnKeyNotFound(CacheEntry e, String key) {
-      cache.compute(key, (k, v) -> {
-          if (v == null || e.createRevision == v.createRevision) {
-            return null;
-          } else {
-            return v;
-          }
-        }
-      );
-    }
-
-    @Override
-    protected CacheEntry getCacheEntryOrNull(String key) {
-      return cache.getOrDefault(key, null);
-    }
-
-    @Override
-    public void cleanup() {
-      String stat = updateStat.report();
-      if (stat != null && stat.length() > 0) {
-        LOG.warn("update statistics: {}", stat);
+        kvs.forEach(kv -> cache.put(kv.getKey().toString(charset), CacheEntry.ofKeyValue(kv)));
       }
     }
   }
